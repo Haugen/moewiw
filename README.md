@@ -9,16 +9,25 @@ This repository contains what will become the most over-engineered website ever 
 ## The Mission
 
 Our mission is to take the simplest possible website and engineer it beyond all reasonable bounds. We're talking:
+
 - Microservices architecture
 - Distributed systems
 - Containerization and orchestration
 - CI/CD pipelines
 - And every other buzzword and technology we can reasonably (or unreasonably) incorporate
 
-## Getting Started
+## Network
 
-Simply open `index.html` in your browser to see the current state of our masterpiece.
-
----
-
-*Stay tuned as we embark on this journey of beautiful, unnecessary complexity.*
+```
+Internet
+   ↓
+Public IP (e.g. 20.82.45.123)
+   ↓
+NSG (checks: is port 80 allowed? YES → proceed)
+   ↓
+Network Interface (translates to private IP)
+   ↓
+VM in Subnet (10.0.1.4)
+   ↓
+Docker Container
+```
