@@ -137,7 +137,7 @@ resource "azurerm_linux_virtual_machine" "vm" {
 
   admin_ssh_key {
     username   = "azureuser"
-    public_key = file("~/.ssh/id_rsa.pub")
+    public_key = file("~/.ssh/moewiw.pub")
   }
 
   os_disk {
@@ -183,8 +183,40 @@ resource "azurerm_linux_virtual_machine" "vm" {
   )
 }
 
+# --- Azure Container Registry
+
+# Azure Container Registry for storing Docker images
+resource "azurerm_container_registry" "acr" {
+  name                = "moewiwacr" # Must be globally unique, alphanumeric only
+  resource_group_name = azurerm_resource_group.rg.name
+  location            = azurerm_resource_group.rg.location
+  sku                 = "Basic"
+  admin_enabled       = true # Enables username/password auth (simpler for learning)
+}
+
+# --- Outputs
+
 # Output the public IP so we can access the VM
 output "vm_public_ip" {
   value       = azurerm_public_ip.vm_public_ip.ip_address
   description = "Public IP address of the VM"
+}
+
+# Output ACR login server
+output "acr_login_server" {
+  value       = azurerm_container_registry.acr.login_server
+  description = "ACR login server URL"
+}
+
+# Output ACR admin username (for GitHub Actions)
+output "acr_admin_username" {
+  value       = azurerm_container_registry.acr.admin_username
+  description = "ACR admin username"
+}
+
+# Output ACR admin password (sensitive, for GitHub Actions)
+output "acr_admin_password" {
+  value       = azurerm_container_registry.acr.admin_password
+  description = "ACR admin password"
+  sensitive   = true # Won't display in console output
 }
