@@ -2,7 +2,7 @@
 
 # Declares the required provider dependencies for our infra.
 # azurerm = Azure Resource Manager
-terraform { 
+terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
@@ -14,9 +14,9 @@ terraform {
 # Configuration for our azure provider.
 # Required, even though we don't have any provider specific config at the moment.
 provider "azurerm" {
-	# subscription_id required after version 4.
-	# Non-sensitive, but could be extracted to env var eventually.
-	subscription_id = "82f1c4b4-d4ed-4a73-abb8-471a7c48dc35"
+  # subscription_id required after version 4.
+  # Non-sensitive, but could be extracted to env var eventually.
+  subscription_id = "82f1c4b4-d4ed-4a73-abb8-471a7c48dc35"
   features {}
 }
 
@@ -97,7 +97,7 @@ resource "azurerm_public_ip" "vm_public_ip" {
   name                = "moewiw-vm-public-ip"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
-  allocation_method   = "Static" # IP doesn't change when VM stops/starts (dynamic IPs can change)
+  allocation_method   = "Static"   # IP doesn't change when VM stops/starts (dynamic IPs can change)
   sku                 = "Standard" # Required for zone-redundant deployments, works with Standard Load Balancers
 }
 
@@ -130,7 +130,7 @@ resource "azurerm_linux_virtual_machine" "vm" {
   resource_group_name = azurerm_resource_group.rg.name
   size                = "Standard_B2ts_v2"
   admin_username      = "azureuser"
-  
+
   network_interface_ids = [
     azurerm_network_interface.vm_nic.id,
   ]
@@ -152,14 +152,33 @@ resource "azurerm_linux_virtual_machine" "vm" {
     version   = "latest"
   }
 
-  # Install Docker on VM creation
+  # Install Docker on VM creation using cloud-init
   custom_data = base64encode(<<-EOF
-    #!/bin/bash
-    apt-get update
-    apt-get install -y docker.io
-    systemctl start docker
-    systemctl enable docker
-    usermod -aG docker azureuser
+    #cloud-config
+
+    # Update package cache on first boot
+    package_update: true
+
+    # Install required packages
+    packages:
+      - docker.io
+      - curl
+      - git
+
+    # Configure system
+    runcmd:
+      # Enable and start Docker service
+      - systemctl enable docker
+      - systemctl start docker
+      # Add azureuser to docker group (no sudo needed for docker commands)
+      - usermod -aG docker azureuser
+      # Wait for Docker to be fully ready
+      - timeout 30 bash -c 'until docker info >/dev/null 2>&1; do sleep 2; done'
+      # Pull nginx image to speed up first deployment
+      - docker pull nginx:alpine
+
+    # Final message logged to cloud-init output
+    final_message: "Cloud-init setup complete. Docker is ready. System is up after $UPTIME seconds."
   EOF
   )
 }
