@@ -1,0 +1,12 @@
+# Terraform variable values - EXAMPLE FILE
+# Copy this to terraform.tfvars and fill in your actual values
+
+# Azure Subscription ID
+subscription_id = "00000000-0000-0000-0000-000000000000"
+
+# GitHub Actions App Registration Client ID
+# Find this in Azure Portal → App Registrations → github-actions-moewiw → Application (client) ID
+github_actions_client_id = "00000000-0000-0000-0000-000000000000"
+
+# SSH private key path (default is ~/.ssh/id_rsa, override if different)
+#ssh_private_key_path = "~/.ssh/id_rsa"

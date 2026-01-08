@@ -2,11 +2,16 @@
 
 # Declares the required provider dependencies for our infra.
 # azurerm = Azure Resource Manager
+# azuread = Azure Active Directory (for looking up App Registration)
 terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
       version = "=4.1.0"
+    }
+    azuread = {
+      source  = "hashicorp/azuread"
+      version = "~> 3.1.0"
     }
   }
 }
@@ -14,11 +19,27 @@ terraform {
 # Configuration for our azure provider.
 # Required, even though we don't have any provider specific config at the moment.
 provider "azurerm" {
-  # subscription_id required after version 4.
-  # Non-sensitive, but could be extracted to env var eventually.
-  subscription_id = "82f1c4b4-d4ed-4a73-abb8-471a7c48dc35"
+  subscription_id = var.subscription_id
   features {}
 }
+
+# Configuration for Azure AD provider
+provider "azuread" {
+}
+
+# --- Data Sources (lookup existing resources/configuration)
+
+# Get current Terraform executor's identity (you, when running locally)
+# Used for: Key Vault tenant_id, granting yourself Key Vault admin rights
+data "azurerm_client_config" "current" {}
+
+# Look up the Service Principal for our GitHub Actions App Registration
+# Used for: RBAC role assignments to grant GitHub Actions access to resources
+data "azuread_service_principal" "moewiw_github_actions" {
+  client_id = var.github_actions_client_id
+}
+
+# --- Resource Group
 
 # Creates an Azure Resource Group called "rg".
 # A logical container for Azure resources.
@@ -194,29 +215,104 @@ resource "azurerm_container_registry" "acr" {
   admin_enabled       = true # Enables username/password auth (simpler for learning)
 }
 
-# --- Outputs
+# --- Azure Key Vault for Secrets
 
-# Output the public IP so we can access the VM
+# Key Vault for secure secret storage
+resource "azurerm_key_vault" "kv" {
+  name                       = "moewiw-kv"
+  location                   = azurerm_resource_group.rg.location
+  resource_group_name        = azurerm_resource_group.rg.name
+  tenant_id                  = data.azurerm_client_config.current.tenant_id
+  sku_name                   = "standard"
+  soft_delete_retention_days = 7
+  purge_protection_enabled   = false
+
+  # Use Azure RBAC for access control (modern approach)
+  enable_rbac_authorization = true
+}
+
+# --- RBAC Role Assignments
+
+# Grant Terraform (current user) Key Vault Administrator to write initial secrets
+resource "azurerm_role_assignment" "kv_admin_terraform" {
+  scope                = azurerm_key_vault.kv.id
+  role_definition_name = "Key Vault Administrator"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
+# Grant GitHub Actions Service Principal access to read secrets from Key Vault
+resource "azurerm_role_assignment" "kv_secrets_user" {
+  scope                = azurerm_key_vault.kv.id
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = data.azuread_service_principal.moewiw_github_actions.object_id
+}
+
+# Grant GitHub Actions permission to push/pull from ACR
+resource "azurerm_role_assignment" "acr_push" {
+  scope                = azurerm_container_registry.acr.id
+  role_definition_name = "AcrPush"
+  principal_id         = data.azuread_service_principal.moewiw_github_actions.object_id
+}
+
+# Grant GitHub Actions permission to read ACR properties (login server, etc.)
+resource "azurerm_role_assignment" "acr_reader" {
+  scope                = azurerm_container_registry.acr.id
+  role_definition_name = "Reader"
+  principal_id         = data.azuread_service_principal.moewiw_github_actions.object_id
+}
+
+# Grant GitHub Actions permission to read the VM's Public IP (to get VM IP for SSH)
+resource "azurerm_role_assignment" "public_ip_reader" {
+  scope                = azurerm_public_ip.vm_public_ip.id
+  role_definition_name = "Reader"
+  principal_id         = data.azuread_service_principal.moewiw_github_actions.object_id
+}
+
+# --- Storing secrets in Key Vault
+
+resource "azurerm_key_vault_secret" "acr_username" {
+  name         = "acr-admin-username"
+  value        = azurerm_container_registry.acr.admin_username
+  key_vault_id = azurerm_key_vault.kv.id
+
+  depends_on = [
+    azurerm_role_assignment.kv_admin_terraform
+  ]
+}
+
+resource "azurerm_key_vault_secret" "acr_password" {
+  name         = "acr-admin-password"
+  value        = azurerm_container_registry.acr.admin_password
+  key_vault_id = azurerm_key_vault.kv.id
+
+  depends_on = [
+    azurerm_role_assignment.kv_admin_terraform
+  ]
+}
+
+resource "azurerm_key_vault_secret" "ssh_key" {
+  name         = "vm-ssh-private-key"
+  value        = file(var.ssh_private_key_path)
+  key_vault_id = azurerm_key_vault.kv.id
+
+  depends_on = [
+    azurerm_role_assignment.kv_admin_terraform
+  ]
+}
+
+# --- Outputs. Just for convenience. we don't need these for anything at this point.
+
 output "vm_public_ip" {
   value       = azurerm_public_ip.vm_public_ip.ip_address
   description = "Public IP address of the VM"
 }
 
-# Output ACR login server
 output "acr_login_server" {
   value       = azurerm_container_registry.acr.login_server
   description = "ACR login server URL"
 }
 
-# Output ACR admin username (for GitHub Actions)
-output "acr_admin_username" {
-  value       = azurerm_container_registry.acr.admin_username
-  description = "ACR admin username"
-}
-
-# Output ACR admin password (sensitive, for GitHub Actions)
-output "acr_admin_password" {
-  value       = azurerm_container_registry.acr.admin_password
-  description = "ACR admin password"
-  sensitive   = true # Won't display in console output
+output "key_vault_name" {
+  value       = azurerm_key_vault.kv.name
+  description = "Key Vault name for secret storage"
 }

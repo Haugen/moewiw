@@ -8,6 +8,18 @@ on:
       - "app/**"
       - ".github/workflows/deploy.yml"
 
+# Required for OIDC token authentication with Azure
+permissions:
+  id-token: write
+  contents: read
+
+# Environment variables used across multiple steps
+env:
+  ACR_NAME: moewiwacr
+  KEY_VAULT_NAME: moewiw-kv
+  RESOURCE_GROUP: moewiw
+  VM_NAME: moewiw-vm
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -16,18 +28,68 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Step 1: Authenticate to Azure using OIDC (no secrets needed!)
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # Step 2: Fetch secrets from Key Vault
+      - name: Get secrets from Key Vault
+        id: keyvault
+        run: |
+          echo "Fetching secrets from Key Vault..."
+
+          ACR_USERNAME=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name acr-admin-username --query value -o tsv)
+          ACR_PASSWORD=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name acr-admin-password --query value -o tsv)
+          SSH_PRIVATE_KEY=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name vm-ssh-private-key --query value -o tsv)
+
+          # Mask secrets so they don't appear in logs
+          echo "::add-mask::$ACR_USERNAME"
+          echo "::add-mask::$ACR_PASSWORD"
+          echo "::add-mask::$SSH_PRIVATE_KEY"
+
+          # Store in environment for later steps
+          echo "ACR_USERNAME=$ACR_USERNAME" >> $GITHUB_ENV
+          echo "ACR_PASSWORD=$ACR_PASSWORD" >> $GITHUB_ENV
+
+          # SSH key needs special handling (multi-line)
+          echo "SSH_PRIVATE_KEY<<EOF" >> $GITHUB_ENV
+          echo "$SSH_PRIVATE_KEY" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+          echo "✅ Secrets retrieved from Key Vault"
+
+      # Step 3: Query Azure for dynamic values (no hardcoding!)
+      - name: Get Azure resource info
+        run: |
+          echo "Querying Azure for resource information..."
+
+          ACR_LOGIN_SERVER=$(az acr show --name $ACR_NAME --query loginServer -o tsv)
+          VM_PUBLIC_IP=$(az network public-ip show --resource-group $RESOURCE_GROUP --name moewiw-vm-public-ip --query ipAddress -o tsv)
+
+          echo "ACR_LOGIN_SERVER=$ACR_LOGIN_SERVER" >> $GITHUB_ENV
+          echo "VM_PUBLIC_IP=$VM_PUBLIC_IP" >> $GITHUB_ENV
+
+          echo "✅ ACR Login Server: $ACR_LOGIN_SERVER"
+          echo "✅ VM Public IP: $VM_PUBLIC_IP"
+
+      # Step 4: Log in to ACR
       - name: Log in to Azure Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ${{ secrets.ACR_LOGIN_SERVER }}
-          username: ${{ secrets.ACR_USERNAME }}
-          password: ${{ secrets.ACR_PASSWORD }}
+          registry: ${{ env.ACR_LOGIN_SERVER }}
+          username: ${{ env.ACR_USERNAME }}
+          password: ${{ env.ACR_PASSWORD }}
 
+      # Step 5: Build and push Docker image
       - name: Build and push Docker image
         working-directory: ./app
         run: |
-          IMAGE_TAG="${{ secrets.ACR_LOGIN_SERVER }}/moewiw:${{ github.sha }}"
-          IMAGE_LATEST="${{ secrets.ACR_LOGIN_SERVER }}/moewiw:latest"
+          IMAGE_TAG="${ACR_LOGIN_SERVER}/moewiw:${{ github.sha }}"
+          IMAGE_LATEST="${ACR_LOGIN_SERVER}/moewiw:latest"
 
           echo "Building image for linux/amd64: $IMAGE_TAG"
           docker build --platform linux/amd64 -t $IMAGE_TAG -t $IMAGE_LATEST .
@@ -36,20 +98,19 @@ jobs:
           docker push $IMAGE_TAG
           docker push $IMAGE_LATEST
 
-          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
-
+      # Step 6: Deploy to VM via SSH
       - name: Deploy to VM
         uses: appleboy/ssh-action@v1.0.0
         with:
-          host: ${{ secrets.VM_HOST }}
+          host: ${{ env.VM_PUBLIC_IP }}
           username: azureuser
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          key: ${{ env.SSH_PRIVATE_KEY }}
           script: |
             echo "Logging into ACR..."
-            echo "${{ secrets.ACR_PASSWORD }}" | docker login ${{ secrets.ACR_LOGIN_SERVER }} -u ${{ secrets.ACR_USERNAME }} --password-stdin
+            echo "${{ env.ACR_PASSWORD }}" | docker login ${{ env.ACR_LOGIN_SERVER }} -u ${{ env.ACR_USERNAME }} --password-stdin
 
             echo "Pulling new image..."
-            docker pull ${{ secrets.ACR_LOGIN_SERVER }}/moewiw:latest
+            docker pull ${{ env.ACR_LOGIN_SERVER }}/moewiw:latest
 
             echo "Stopping old container..."
             docker stop webapp || true
@@ -60,7 +121,7 @@ jobs:
               -p 80:80 \
               --name webapp \
               --restart unless-stopped \
-              ${{ secrets.ACR_LOGIN_SERVER }}/moewiw:latest
+              ${{ env.ACR_LOGIN_SERVER }}/moewiw:latest
 
             echo "Deployment complete!"
             docker ps
