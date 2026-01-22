@@ -7,6 +7,7 @@ on:
     paths:
       - "app/**"
       - ".github/workflows/deploy.yml"
+  workflow_dispatch:
 
 # Required for OIDC token authentication with Azure
 permissions:
@@ -45,15 +46,18 @@ jobs:
           ACR_USERNAME=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name acr-admin-username --query value -o tsv)
           ACR_PASSWORD=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name acr-admin-password --query value -o tsv)
           SSH_PRIVATE_KEY=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name vm-ssh-private-key --query value -o tsv)
+          APPINSIGHTS_CONNECTION_STRING=$(az keyvault secret show --vault-name $KEY_VAULT_NAME --name appinsights-connection-string --query value -o tsv)
 
           # Mask secrets so they don't appear in logs
           echo "::add-mask::$ACR_USERNAME"
           echo "::add-mask::$ACR_PASSWORD"
           echo "::add-mask::$SSH_PRIVATE_KEY"
+          echo "::add-mask::$APPINSIGHTS_CONNECTION_STRING"
 
           # Store in environment for later steps
           echo "ACR_USERNAME=$ACR_USERNAME" >> $GITHUB_ENV
           echo "ACR_PASSWORD=$ACR_PASSWORD" >> $GITHUB_ENV
+          echo "APPINSIGHTS_CONNECTION_STRING=$APPINSIGHTS_CONNECTION_STRING" >> $GITHUB_ENV
 
           # SSH key needs special handling (multi-line)
           echo "SSH_PRIVATE_KEY<<EOF" >> $GITHUB_ENV
@@ -83,6 +87,13 @@ jobs:
           registry: ${{ env.ACR_LOGIN_SERVER }}
           username: ${{ env.ACR_USERNAME }}
           password: ${{ env.ACR_PASSWORD }}
+
+      # Step 4.5: Inject Application Insights connection string into HTML
+      - name: Inject Application Insights configuration
+        run: |
+          echo "Injecting Application Insights connection string into index.html..."
+          sed -i "s|APPINSIGHTS_CONNECTION_STRING_PLACEHOLDER|$APPINSIGHTS_CONNECTION_STRING|g" app/src/index.html
+          echo "✅ Application Insights configuration injected"
 
       # Step 5: Build and push Docker image
       - name: Build and push Docker image

@@ -215,6 +215,34 @@ resource "azurerm_container_registry" "acr" {
   admin_enabled       = true # Enables username/password auth (simpler for learning)
 }
 
+# --- Azure Monitor & Application Insights
+
+# Log Analytics Workspace - Central data store for all logs and metrics
+resource "azurerm_log_analytics_workspace" "law" {
+  name                = "moewiw-law"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  sku                 = "PerGB2018"
+  retention_in_days   = 30 # First 31 days free, then paid retention kicks in
+
+  tags = {
+    purpose = "over-engineering"
+  }
+}
+
+# Application Insights - APM for our static HTML masterpiece
+resource "azurerm_application_insights" "appinsights" {
+  name                = "moewiw-appinsights"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  workspace_id        = azurerm_log_analytics_workspace.law.id
+  application_type    = "web"
+
+  tags = {
+    purpose = "monitoring-a-single-html-file"
+  }
+}
+
 # --- Azure Key Vault for Secrets
 
 # Key Vault for secure secret storage
@@ -300,6 +328,88 @@ resource "azurerm_key_vault_secret" "ssh_key" {
   ]
 }
 
+resource "azurerm_key_vault_secret" "appinsights_connection_string" {
+  name         = "appinsights-connection-string"
+  value        = azurerm_application_insights.appinsights.connection_string
+  key_vault_id = azurerm_key_vault.kv.id
+
+  depends_on = [
+    azurerm_role_assignment.kv_admin_terraform
+  ]
+}
+
+# --- Diagnostic Settings (Send logs to Log Analytics)
+
+# VM Diagnostic Settings - Metrics only (Linux doesn't support guest OS logs via Azure diagnostics)
+resource "azurerm_monitor_diagnostic_setting" "vm_diagnostics" {
+  name                       = "vm-diagnostics"
+  target_resource_id         = azurerm_linux_virtual_machine.vm.id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.law.id
+
+  # Platform metrics (CPU, memory, disk, network)
+  metric {
+    category = "AllMetrics"
+    enabled  = true
+  }
+}
+
+# NSG Diagnostic Settings - Flow logs and rule stats
+resource "azurerm_monitor_diagnostic_setting" "nsg_diagnostics" {
+  name                       = "nsg-diagnostics"
+  target_resource_id         = azurerm_network_security_group.nsg.id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.law.id
+
+  # NSG Flow Logs - every connection attempt
+  enabled_log {
+    category = "NetworkSecurityGroupEvent"
+  }
+
+  enabled_log {
+    category = "NetworkSecurityGroupRuleCounter"
+  }
+}
+
+# ACR Diagnostic Settings - Push/pull operations
+resource "azurerm_monitor_diagnostic_setting" "acr_diagnostics" {
+  name                       = "acr-diagnostics"
+  target_resource_id         = azurerm_container_registry.acr.id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.law.id
+
+  # Registry events (push, pull, delete)
+  enabled_log {
+    category = "ContainerRegistryRepositoryEvents"
+  }
+
+  enabled_log {
+    category = "ContainerRegistryLoginEvents"
+  }
+
+  # ACR metrics (storage, pull count)
+  metric {
+    category = "AllMetrics"
+    enabled  = true
+  }
+}
+
+# Key Vault Diagnostic Settings - Audit logs
+resource "azurerm_monitor_diagnostic_setting" "kv_diagnostics" {
+  name                       = "kv-diagnostics"
+  target_resource_id         = azurerm_key_vault.kv.id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.law.id
+
+  # Audit events (every secret access)
+  enabled_log {
+    category = "AuditEvent"
+  }
+
+  # Key Vault metrics
+  metric {
+    category = "AllMetrics"
+    enabled  = true
+  }
+}
+
+
 # --- Outputs. Just for convenience. we don't need these for anything at this point.
 
 output "vm_public_ip" {
@@ -315,4 +425,9 @@ output "acr_login_server" {
 output "key_vault_name" {
   value       = azurerm_key_vault.kv.name
   description = "Key Vault name for secret storage"
+}
+
+output "log_analytics_workspace_id" {
+  value       = azurerm_log_analytics_workspace.law.id
+  description = "Log Analytics Workspace ID"
 }
