@@ -20,7 +20,12 @@ terraform {
 # Required, even though we don't have any provider specific config at the moment.
 provider "azurerm" {
   subscription_id = var.subscription_id
-  features {}
+  features {
+    resource_group {
+      # Allow deletion even if resources exist (e.g., auto-created Smart Detection action group)
+      prevent_deletion_if_contains_resources = false
+    }
+  }
 }
 
 # Configuration for Azure AD provider
